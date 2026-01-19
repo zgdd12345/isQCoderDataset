@@ -55,6 +55,30 @@ def _configure_logging(log_file: str, log_level: int = logging.INFO) -> logging.
     return logging.getLogger(__name__)
 
 
+def _configure_paper_stats_logging(log_file: str, log_level: int = logging.INFO) -> logging.Logger:
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    logger_name = f"paper_stats.{os.path.basename(log_file)}"
+    stats_logger = logging.getLogger(logger_name)
+    stats_logger.setLevel(log_level)
+    stats_logger.propagate = False
+
+    abs_log_file = os.path.abspath(log_file)
+    log_dir = os.path.dirname(abs_log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    if not any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == abs_log_file
+        for h in stats_logger.handlers
+    ):
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        stats_logger.addHandler(file_handler)
+
+    return stats_logger
+
+
 def normalize_latex(text: str) -> str:
     """统一LaTeX分隔符为$...$或$$...$$。"""
     if not text:
@@ -77,6 +101,7 @@ class DatasetSample:
 class SegmentedPaper:
     """论文段落结构，用于代理工作流"""
     paper_title: str
+    paper_abstract: str  # 论文摘要，用于提供额外上下文
     segment_title: str
     segment_content: str
     full_paper_content: str  # 用于验证步骤
@@ -105,4 +130,6 @@ class VerificationResult:
     passed: bool
     confidence_score: float
     issues: List[str]
+    context_leakage: List[str] = None  # 上下文泄漏实例
+    self_contained: bool = True  # 是否自包含
     suggestion: str = ""

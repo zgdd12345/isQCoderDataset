@@ -23,6 +23,7 @@ from dataset_core import (
     VerificationResult,
     normalize_latex,
     _configure_logging,
+    _configure_paper_stats_logging,
 )
 from aiagent.agent_prompts import (
     get_instruction_prompt,
@@ -47,20 +48,27 @@ class TokenBucketRateLimiter:
         self,
         rate_per_minute: int = 30,
         burst_size: int = 5,
+        max_concurrent: int = 8,
         logger: Optional[logging.Logger] = None
     ):
         """
         Args:
             rate_per_minute: 每分钟允许的请求数
             burst_size: 允许的突发请求数（令牌桶最大容量）
+            max_concurrent: 最大并发请求数（信号量大小）
             logger: 日志记录器
         """
         self.rate_per_minute = rate_per_minute
         self.burst_size = min(burst_size, rate_per_minute)
+        self.max_concurrent = max_concurrent
         self.tokens = float(self.burst_size)
         self.last_update = time.monotonic()
         self.token_interval = 60.0 / rate_per_minute
-        self._lock = asyncio.Lock()
+
+        # 关键改变：使用信号量控制并发，而非序列化锁
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._lock = asyncio.Lock()  # 仅用于保护令牌状态读写
+
         self.logger = logger or logging.getLogger(__name__)
 
         # 统计信息
@@ -71,12 +79,28 @@ class TokenBucketRateLimiter:
         """
         获取一个令牌，如果没有可用令牌则等待
 
-        关键：整个过程持有锁，确保请求严格串行
+        关键改进：使用信号量允许 max_concurrent 个任务并发
 
         Returns:
             等待时间（秒）
         """
-        async with self._lock:
+        async with self._semaphore:  # 允许 max_concurrent 个任务并发进入
+            wait_time = await self._calculate_wait_time()
+            if wait_time > 0:
+                self.logger.debug(f"速率限制：需等待 {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)  # 不在锁内睡眠
+            else:
+                self.logger.debug(f"速率限制：立即获取令牌")
+            return wait_time
+
+    async def _calculate_wait_time(self) -> float:
+        """
+        快速计算等待时间，不阻塞其他任务
+
+        Returns:
+            等待时间（秒）
+        """
+        async with self._lock:  # 仅锁保护令牌计算
             now = time.monotonic()
 
             # 补充令牌
@@ -89,19 +113,11 @@ class TokenBucketRateLimiter:
             if self.tokens >= 1.0:
                 self.tokens -= 1.0
                 self._total_requests += 1
-                self.logger.debug(f"速率限制：立即获取令牌（剩余={self.tokens:.2f}）")
                 return 0.0
 
-            # 计算需要等待的时间
+            # 计算等待时间并预扣令牌
             wait_time = (1.0 - self.tokens) * self.token_interval
-            self.logger.debug(f"速率限制：需等待 {wait_time:.2f}s")
-
-            # 关键：在持有锁的情况下等待，确保串行
-            await asyncio.sleep(wait_time)
-
-            # 等待完成后消费令牌
             self.tokens = 0.0
-            self.last_update = time.monotonic()
             self._total_requests += 1
             self._total_wait_time += wait_time
 
@@ -138,6 +154,9 @@ class ISQCoderDGAgent:
         concurrency: int = 5,
         rate_limit_per_minute: int = 30,
         min_segment_words: int = 120,
+        max_concurrent_papers: int = 3,
+        max_concurrent_segments: int = 15,
+        language_mode: str = "auto",
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -152,6 +171,9 @@ class ISQCoderDGAgent:
             concurrency: 并发处理数量（保留用于向后兼容）
             rate_limit_per_minute: API调用速率限制（次/分钟）
             min_segment_words: 段落最少字数，低于则丢弃
+            max_concurrent_papers: 最大并发论文数
+            max_concurrent_segments: 最大并发段落数
+            language_mode: 语言模式 ("auto", "en", "zh")
             logger: 日志记录器
         """
         self.llm_client = llm_client
@@ -162,24 +184,80 @@ class ISQCoderDGAgent:
         self.concurrency = concurrency
         self.rate_limit_per_minute = rate_limit_per_minute
         self.min_segment_words = min_segment_words
+        self.max_concurrent_papers = max_concurrent_papers
+        self.max_concurrent_segments = max_concurrent_segments
+        self.language_mode = language_mode
 
         if logger is None:
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.logger = _configure_logging(
-                f'./log/agent_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+                f'./log/agent_{run_id}.log'
+            )
+            self.paper_stats_logger = _configure_paper_stats_logging(
+                f'./log/paper_stats_{run_id}.log'
             )
         else:
             self.logger = logger
+            self.paper_stats_logger = _configure_paper_stats_logging(
+                f'./log/paper_stats_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+            )
 
-        # 初始化全局速率限制器
+        # 初始化全局速率限制器（优化配置）
         self.rate_limiter = TokenBucketRateLimiter(
-            rate_per_minute=rate_limit_per_minute,
-            burst_size=1,
+            rate_per_minute=min(rate_limit_per_minute, 38),  # 接近40但留缓冲
+            burst_size=8,  # 允许初始8次快速请求
+            max_concurrent=8,  # 8个任务并发
             logger=self.logger
         )
 
+        # 多级并发控制
+        self._paper_semaphore = asyncio.Semaphore(max_concurrent_papers)
+        self._segment_semaphore = asyncio.Semaphore(max_concurrent_segments)
+
         # 语言分布计数器（用于控制语言比例）
-        self._language_counter = {"en": 0, "mixed": 0, "zh": 0}
+        self._language_counter = {"en": 0, "zh": 0}
         self._language_lock = asyncio.Lock()
+
+    def _extract_abstract(self, content: str) -> str:
+        """
+        从论文内容中提取摘要
+
+        Args:
+            content: 完整的论文Markdown内容
+
+        Returns:
+            摘要文本，如果未找到则返回空字符串
+        """
+        # 匹配多种语言的摘要标题
+        abstract_patterns = [
+            r'#+\s*Abstract\s*\n',
+            r'#+\s*ABSTRACT\s*\n',
+            r'#+\s*摘要\s*\n',
+            r'#+\s*摘\s*要\s*\n',
+        ]
+
+        for pattern in abstract_patterns:
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match:
+                start = match.end()
+
+                # 查找下一个主要section (H1或H2标题)
+                next_section = re.search(r'\n#{1,2}\s+[^\n]+\n', content[start:])
+                if next_section:
+                    end = start + next_section.start()
+                else:
+                    # 如果没有找到下一个section,最多取2000字符
+                    end = start + 2000
+
+                abstract = content[start:end].strip()
+
+                # 限制最大长度为1000字符以控制token成本
+                if len(abstract) > 1000:
+                    abstract = abstract[:1000] + "..."
+
+                return abstract
+
+        return ""  # 未找到摘要
 
     def segment_paper(self, paper_path: str) -> List[SegmentedPaper]:
         """
@@ -198,12 +276,13 @@ class ISQCoderDGAgent:
             self.logger.error(f"读取文件 {paper_path} 失败: {e}")
             return []
 
-        # 提取论文标题
+        # 提取论文标题和摘要
         lines = full_content.split('\n')
         paper_title = next(
             (line.strip('# ').strip() for line in lines if line.startswith('# ')),
             Path(paper_path).stem
         )
+        paper_abstract = self._extract_abstract(full_content)
 
         # 按H1标题分割段落
         segments = []
@@ -222,6 +301,7 @@ class ISQCoderDGAgent:
                     if len(segment_content) > 1000:
                         segments.append(SegmentedPaper(
                             paper_title=paper_title,
+                            paper_abstract=paper_abstract,
                             segment_title=current_title,
                             segment_content=segment_content,
                             full_paper_content=full_content
@@ -238,6 +318,7 @@ class ISQCoderDGAgent:
             if len(segment_content) > 1000:
                 segments.append(SegmentedPaper(
                     paper_title=paper_title,
+                    paper_abstract=paper_abstract,
                     segment_title=current_title,
                     segment_content=segment_content,
                     full_paper_content=full_content
@@ -266,8 +347,11 @@ class ISQCoderDGAgent:
         目标分布: 50% 英文, 50% 纯中文
 
         Returns:
-            "en" (英文), "mixed" (中英混合), "zh" (纯中文)
+            "en" (英文), "zh" (纯中文)
         """
+        if self.language_mode in ("en", "zh"):
+            return self.language_mode
+
         async with self._language_lock:
             total = sum(self._language_counter.values())
 
@@ -305,7 +389,7 @@ class ISQCoderDGAgent:
 
         Args:
             segment: 论文段落
-            language_mode: 语言模式 ("en", "mixed", "zh")，如果为None则自动决定
+            language_mode: 语言模式 ("en", "zh")，如果为None则自动决定
 
         Returns:
             生成的指令，失败返回None
@@ -318,6 +402,7 @@ class ISQCoderDGAgent:
         prompt_template = get_instruction_prompt(language_mode)
         prompt = prompt_template.format(
             paper_title=segment.paper_title,
+            paper_abstract=segment.paper_abstract,
             segment_title=segment.segment_title,
             segment_content=segment.segment_content
         )
@@ -329,9 +414,7 @@ class ISQCoderDGAgent:
             return None
 
         try:
-            # 解析JSON响应
-            json_content = self._extract_json(response.text)
-            data = json.loads(json_content)
+            data = self._parse_json_from_text(response.text)
 
             instruction = GeneratedInstruction(
                 instruction=data.get("instruction", ""),
@@ -343,7 +426,7 @@ class ISQCoderDGAgent:
             # 在 instruction 对象上附加语言模式信息（用于后续步骤）
             instruction.language_mode = language_mode
             return instruction
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, ValueError) as e:
             self.logger.error(f"指令生成JSON解析失败: {e}")
             self.logger.debug(f"响应内容: {response.text}")
             return None
@@ -381,8 +464,7 @@ class ISQCoderDGAgent:
             return False
 
         try:
-            json_content = self._extract_json(response.text)
-            data = json.loads(json_content)
+            data = self._parse_json_from_text(response.text)
             is_quantum = bool(data.get("is_quantum", False))
             reason = data.get("reason", "")
             if not isinstance(reason, str):
@@ -391,7 +473,7 @@ class ISQCoderDGAgent:
                 f"段落相关性判定: {segment.segment_title} -> {is_quantum} ({reason[:60]}...)"
             )
             return is_quantum
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, ValueError) as e:
             self.logger.warning(f"段落相关性判定JSON解析失败: {segment.segment_title} - {e}")
             return False
 
@@ -410,6 +492,7 @@ class ISQCoderDGAgent:
         prompt_template = get_input_prompt(language_mode)
         prompt = prompt_template.format(
             paper_title=instruction.segment.paper_title,
+            paper_abstract=instruction.segment.paper_abstract,
             segment_title=instruction.segment.segment_title,
             segment_content=instruction.segment.segment_content,
             instruction=instruction.instruction,
@@ -423,8 +506,7 @@ class ISQCoderDGAgent:
             return instruction
 
         try:
-            json_content = self._extract_json(response.text)
-            data = json.loads(json_content)
+            data = self._parse_json_from_text(response.text)
 
             needs_input = data.get("needs_input", False)
             reasoning = data.get("reasoning", "")
@@ -443,7 +525,7 @@ class ISQCoderDGAgent:
                 self.logger.info(f"不需要input (原因: {reasoning[:50]}...)")
 
             return instruction
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, ValueError) as e:
             self.logger.warning(f"Input生成JSON解析失败: {e}，保留原input")
             return instruction
 
@@ -464,6 +546,7 @@ class ISQCoderDGAgent:
         prompt_template = get_answer_prompt(language_mode)
         prompt = prompt_template.format(
             paper_title=instruction.segment.paper_title,
+            paper_abstract=instruction.segment.paper_abstract,
             segment_title=instruction.segment.segment_title,
             segment_content=instruction.segment.segment_content,
             instruction=instruction.instruction,
@@ -495,6 +578,7 @@ class ISQCoderDGAgent:
         """
         prompt = VERIFICATION_PROMPT.format(
             paper_title=answer.instruction.segment.paper_title,
+            paper_abstract=answer.instruction.segment.paper_abstract,
             segment_content=answer.instruction.segment.segment_content,
             instruction=answer.instruction.instruction,
             input=answer.instruction.input,
@@ -513,17 +597,19 @@ class ISQCoderDGAgent:
             )
 
         try:
-            json_content = self._extract_json(response.text)
-            data = json.loads(json_content)
+            data = self._parse_json_from_text(response.text)
 
             return VerificationResult(
                 passed=data.get("passed", False),
                 confidence_score=float(data.get("confidence_score", 0.0)),
                 issues=data.get("issues", []),
+                context_leakage=data.get("context_leakage", []),
+                self_contained=data.get("self_contained", True),
                 suggestion=data.get("suggestion", "")
             )
         except (json.JSONDecodeError, ValueError) as e:
             self.logger.error(f"验证结果JSON解析失败: {e}")
+            self.logger.debug(f"验证响应内容: {response.text}")
             return VerificationResult(
                 passed=False,
                 confidence_score=0.0,
@@ -658,6 +744,105 @@ class ISQCoderDGAgent:
 
         return None
 
+    async def _process_single_paper(
+        self,
+        paper_file: str,
+        max_samples_per_paper: int,
+        output_file: str
+    ) -> tuple[int, int, List[DatasetSample]]:
+        """
+        处理单篇论文（受论文级信号量控制）
+
+        Args:
+            paper_file: 论文文件路径
+            max_samples_per_paper: 每篇论文最大样本数
+            output_file: 输出文件路径前缀
+
+        Returns:
+            (成功数, 失败数, 样本列表)
+        """
+        async with self._paper_semaphore:
+            paper_name = Path(paper_file).stem
+            self.logger.info(f"分割论文: {paper_name}")
+
+            segments = self.segment_paper(paper_file)
+            if not segments:
+                self.logger.warning(f"论文 {paper_name} 没有有效段落")
+                self.paper_stats_logger.info(
+                    f"{paper_name}\t成功=0\t失败=0\t总数=0"
+                )
+                return (0, 0, [])
+
+            # 限制每篇论文的段落数（0表示不限制）
+            if max_samples_per_paper > 0:
+                segments = segments[:max_samples_per_paper]
+
+            paper_output_file = self._build_paper_output_path(output_file, paper_file)
+            if os.path.exists(paper_output_file):
+                os.remove(paper_output_file)
+
+            success_count = 0
+            error_count = 0
+            paper_samples: List[DatasetSample] = []
+
+            # 包装 process_segment 以支持实时保存和进度更新
+            async def process_and_save(segment: SegmentedPaper, pbar) -> Optional[DatasetSample]:
+                nonlocal success_count, error_count
+                # 添加段落级并发控制
+                async with self._segment_semaphore:
+                    try:
+                        result = await self.process_segment(segment)
+                        if isinstance(result, DatasetSample):
+                            # 实时保存到文件
+                            self._save_sample(result, paper_output_file)
+                            success_count += 1
+                            pbar.set_postfix({
+                                '成功': success_count,
+                                '失败': error_count,
+                                '速率': f"{self.rate_limit_per_minute}/min"
+                            })
+                            return result
+                        error_count += 1
+                        pbar.set_postfix({
+                            '成功': success_count,
+                            '失败': error_count,
+                            '速率': f"{self.rate_limit_per_minute}/min"
+                        })
+                        return None
+                    except Exception as e:
+                        error_count += 1
+                        self.logger.error(f"段落处理异常: {segment.segment_title} - {e}")
+                        pbar.set_postfix({
+                            '成功': success_count,
+                            '失败': error_count,
+                            '速率': f"{self.rate_limit_per_minute}/min"
+                        })
+                        return None
+
+            # 使用 tqdm 进度条并发处理该论文的段落
+            tasks = []
+            with atqdm(total=len(segments), desc=f"生成数据集: {paper_name}", unit="段落") as pbar:
+                for seg in segments:
+                    task = asyncio.create_task(process_and_save(seg, pbar))
+                    # 添加完成回调来更新进度条
+                    task.add_done_callback(lambda _: pbar.update(1))
+                    tasks.append(task)
+
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, DatasetSample):
+                    paper_samples.append(result)
+
+            self.logger.info(
+                f"论文 {paper_name} 完成，生成 {len(paper_samples)} 个样本，保存至 {paper_output_file}"
+            )
+            self.paper_stats_logger.info(
+                f"{paper_name}\t成功={success_count}\t失败={error_count}\t总数={len(segments)}"
+            )
+
+            return (success_count, error_count, paper_samples)
+
     async def generate_dataset(
         self,
         data_dir: str = "data",
@@ -684,80 +869,26 @@ class ISQCoderDGAgent:
         total_error = 0
         all_samples: List[DatasetSample] = []
 
-        for paper_file in paper_files:
-            paper_name = Path(paper_file).stem
-            self.logger.info(f"分割论文: {paper_name}")
-
-            segments = self.segment_paper(paper_file)
-            if not segments:
-                self.logger.warning(f"论文 {paper_name} 没有有效段落")
-                continue
-
-            # 限制每篇论文的段落数（0表示不限制）
-            if max_samples_per_paper > 0:
-                segments = segments[:max_samples_per_paper]
-
-            paper_output_file = self._build_paper_output_path(output_file, paper_file)
-            if os.path.exists(paper_output_file):
-                os.remove(paper_output_file)
-
-            success_count = 0
-            error_count = 0
-
-            # 包装 process_segment 以支持实时保存和进度更新
-            async def process_and_save(segment: SegmentedPaper, pbar) -> Optional[DatasetSample]:
-                nonlocal success_count, error_count
-                try:
-                    result = await self.process_segment(segment)
-                    if isinstance(result, DatasetSample):
-                        # 实时保存到文件
-                        self._save_sample(result, paper_output_file)
-                        success_count += 1
-                        pbar.set_postfix({
-                            '成功': success_count,
-                            '失败': error_count,
-                            '速率': f"{self.rate_limit_per_minute}/min"
-                        })
-                        return result
-                    error_count += 1
-                    pbar.set_postfix({
-                        '成功': success_count,
-                        '失败': error_count,
-                        '速率': f"{self.rate_limit_per_minute}/min"
-                    })
-                    return None
-                except Exception as e:
-                    error_count += 1
-                    self.logger.error(f"段落处理异常: {segment.segment_title} - {e}")
-                    pbar.set_postfix({
-                        '成功': success_count,
-                        '失败': error_count,
-                        '速率': f"{self.rate_limit_per_minute}/min"
-                    })
-                    return None
-
-            # 使用 tqdm 进度条并发处理该论文的段落
-            tasks = []
-            with atqdm(total=len(segments), desc=f"生成数据集: {paper_name}", unit="段落") as pbar:
-                for seg in segments:
-                    task = asyncio.create_task(process_and_save(seg, pbar))
-                    # 添加完成回调来更新进度条
-                    task.add_done_callback(lambda _: pbar.update(1))
-                    tasks.append(task)
-
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            paper_samples = 0
-            for result in results:
-                if isinstance(result, DatasetSample):
-                    all_samples.append(result)
-                    paper_samples += 1
-
-            total_success += success_count
-            total_error += error_count
-            self.logger.info(
-                f"论文 {paper_name} 完成，生成 {paper_samples} 个样本，保存至 {paper_output_file}"
+        # 并行处理所有论文
+        tasks = [
+            self._process_single_paper(
+                paper_file,
+                max_samples_per_paper,
+                output_file
             )
+            for paper_file in paper_files
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 聚合结果
+        for result in results:
+            if isinstance(result, tuple):
+                success, error, samples = result
+                total_success += success
+                total_error += error
+                all_samples.extend(samples)
+            elif isinstance(result, Exception):
+                self.logger.error(f"论文处理失败: {result}")
 
         # 输出速率限制统计
         rate_stats = self.rate_limiter.get_stats()
@@ -767,18 +898,17 @@ class ISQCoderDGAgent:
         lang_stats = ""
         if total_lang > 0:
             en_pct = (self._language_counter["en"] / total_lang) * 100
-            mixed_pct = (self._language_counter["mixed"] / total_lang) * 100
             zh_pct = (self._language_counter["zh"] / total_lang) * 100
             lang_stats = (
                 f"语言分布：英文={self._language_counter['en']}({en_pct:.1f}%)，"
-                f"中英混合={self._language_counter['mixed']}({mixed_pct:.1f}%)，"
                 f"纯中文={self._language_counter['zh']}({zh_pct:.1f}%)"
             )
 
         self.logger.info(
             f"数据集生成完成，共 {len(all_samples)} 个样本，按论文分别保存。"
-            f"成功: {total_success}，失败: {total_error}。"
-            f"{lang_stats}。"
+            f"成功: {total_success}, 失败: {total_error}。{lang_stats}"
+        )
+        self.logger.info(
             f"速率限制统计：总请求={rate_stats['total_requests']}，"
             f"总等待时间={rate_stats['total_wait_time']:.2f}s，"
             f"平均等待={rate_stats['avg_wait_time']:.2f}s"
@@ -797,6 +927,56 @@ class ISQCoderDGAgent:
             json_end = text.find("```", json_start)
             return text[json_start:json_end].strip()
         return text.strip()
+
+    @staticmethod
+    def _strip_to_json_start(text: str) -> str:
+        for idx, char in enumerate(text):
+            if char in "{[":
+                return text[idx:]
+        return text
+
+    @staticmethod
+    def _escape_invalid_backslashes(text: str) -> str:
+        result = []
+        i = 0
+        length = len(text)
+        while i < length:
+            char = text[i]
+            if char != "\\":
+                result.append(char)
+                i += 1
+                continue
+            if i + 1 >= length:
+                result.append("\\\\")
+                i += 1
+                continue
+            nxt = text[i + 1]
+            if nxt in ["\"", "\\", "/", "b", "f", "n", "r", "t"]:
+                result.append("\\" + nxt)
+                i += 2
+                continue
+            if nxt == "u" and i + 5 < length:
+                hex_part = text[i + 2:i + 6]
+                if all(c in "0123456789abcdefABCDEF" for c in hex_part):
+                    result.append("\\u" + hex_part)
+                    i += 6
+                    continue
+            result.append("\\\\")
+            i += 1
+        return "".join(result)
+
+    def _parse_json_from_text(self, text: str) -> dict:
+        json_text = self._extract_json(text).strip()
+        json_text = self._strip_to_json_start(json_text)
+        decoder = json.JSONDecoder()
+        try:
+            data, _ = decoder.raw_decode(json_text)
+        except json.JSONDecodeError:
+            sanitized = self._escape_invalid_backslashes(json_text)
+            data, _ = decoder.raw_decode(sanitized)
+        if not isinstance(data, dict):
+            raise ValueError("JSON root is not an object")
+        return data
 
     @staticmethod
     def _sanitize_filename(value: str) -> str:
