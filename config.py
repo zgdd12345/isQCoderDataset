@@ -126,8 +126,8 @@ def validate_config(config: Config) -> None:
     if config.use_nvidia and not has_nvidia_key:
         raise ValueError("启用了NVIDIA API但未提供NVIDIA_API_KEY")
 
-    if config.max_samples_per_paper <= 0:
-        raise ValueError("每篇论文最大样本数必须大于0")
+    if config.max_samples_per_paper < 0:
+        raise ValueError("每篇论文最大样本数不能为负数（0表示不限制）")
 
     if not (0.0 <= config.temperature <= 2.0):
         raise ValueError("temperature必须在0.0到2.0之间")

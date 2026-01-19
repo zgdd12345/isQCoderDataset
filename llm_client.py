@@ -95,7 +95,7 @@ class NvidiaProvider(LLMProvider):
         temperature: float = 0.6,
         max_tokens: int = 4096,
         top_p: float = 0.7,
-        timeout: float = 300.0,
+        timeout: float = 120.0,
         logger: Optional[logging.Logger] = None,
     ):
         super().__init__("nvidia", model, logger)
@@ -112,6 +112,32 @@ class NvidiaProvider(LLMProvider):
         self._min_interval = 0.0
         if self.rate_limit_per_minute > 0:
             self._min_interval = 60.0 / self.rate_limit_per_minute
+
+    async def test_connection(self) -> tuple[bool, str]:
+        """测试NVIDIA API链路是否畅通。"""
+        try:
+            await self._throttle()
+            loop = asyncio.get_running_loop()
+
+            def _call() -> str:
+                completion = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": "Reply with OK."}],
+                    temperature=0.0,
+                    top_p=1.0,
+                    max_tokens=1,
+                    stream=False,
+                )
+                return completion.choices[0].message.content or ""
+
+            response = await loop.run_in_executor(None, _call)
+            return True, response.strip()
+        except Exception as exc:
+            self.logger.error(f"NVIDIA API链路测试异常: {exc}")
+            import traceback
+
+            self.logger.error(f"详细错误: {traceback.format_exc()}")
+            return False, str(exc)
 
     async def _throttle(self) -> None:
         if self._min_interval <= 0:
