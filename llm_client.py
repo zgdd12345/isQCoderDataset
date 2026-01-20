@@ -164,8 +164,12 @@ class NvidiaProvider(LLMProvider):
                 )
                 response_text = ""
                 for chunk in stream:
-                    if chunk.choices[0].delta.content:
-                        response_text += chunk.choices[0].delta.content
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = getattr(chunk.choices[0], "delta", None)
+                    content = getattr(delta, "content", None)
+                    if content:
+                        response_text += content
                 self.logger.info("收到NVIDIA API响应")
                 return response_text
 

@@ -2,6 +2,8 @@
 data/
 log
 results/
+results_paper
+results_book
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -337,9 +337,9 @@ Return a JSON object:
 async def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description='生成量子计算指令微调数据集')
-    parser.add_argument('--output', '-o', default='./results/results.jsonl', help='输出文件路径（作为前缀生成每篇论文的jsonl文件）')
-    parser.add_argument('--max-samples', '-m', type=int, default=10, help='每篇论文最大样本数（0表示不限制）')
-    parser.add_argument('--data-dir', '-d', default='data/test', help='论文文件目录')
+    parser.add_argument('--output', '-o', default='./results_paper/results.jsonl', help='输出文件路径（作为前缀生成每篇论文的jsonl文件）')
+    parser.add_argument('--max-samples', '-m', type=int, default=0, help='每篇论文最大样本数（0表示不限制）')
+    parser.add_argument('--data-dir', '-d', default='data/raw', help='论文文件目录')
     parser.add_argument('--provider', choices=['qianwen', 'nvidia'], default='nvidia', help='选择调用的大模型提供方')
     parser.add_argument('--language-mode', choices=['auto', 'en', 'zh'], default='auto', help='语言模式: auto/en/zh')
     # parser.add_argument('--model', default='deepseek-ai/deepseek-r1-0528', help='模型名称（根据provider解释）')
@@ -356,8 +356,8 @@ async def main():
     parser.add_argument('--concurrency', type=int, default=5, help='并发处理数量（保留用于向后兼容）')
     parser.add_argument('--rate-limit', type=int, default=38, help='API调用速率限制（次/分钟）')
     parser.add_argument('--min-segment-words', type=int, default=120, help='段落最少字数，低于则跳过')
-    parser.add_argument('--max-concurrent-papers', type=int, default=3, help='最大并发论文数')
-    parser.add_argument('--max-concurrent-segments', type=int, default=15, help='最大并发段落数')
+    parser.add_argument('--max-concurrent-papers', type=int, default=10, help='最大并发论文数')
+    parser.add_argument('--max-concurrent-segments', type=int, default=50, help='最大并发段落数')
 
     args = parser.parse_args()
 

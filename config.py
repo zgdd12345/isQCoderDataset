@@ -14,9 +14,10 @@ from dotenv import load_dotenv
 class Config:
     """配置类"""
     # NVIDIA API配置（优先使用）
-    nvidia_api_key: Optional[str] = "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"
+    # ⚠️ API密钥不应硬编码,必须从环境变量读取
+    nvidia_api_key: Optional[str] = None
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_model: str = "deepseek-ai/deepseek-r1"
+    nvidia_model: str = "deepseek-ai/deepseek-r1-0528"
     use_nvidia: bool = True  # 是否优先使用NVIDIA API
 
     # API配置（作为备用）

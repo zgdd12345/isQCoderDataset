@@ -13,7 +13,14 @@ def get_instruction_prompt(language_mode: str) -> str:
         language_mode: "en" (英文), "zh" (纯中文)
     """
     if language_mode == "en":
-        return """You are a professional quantum computing education expert. Please generate a valuable learning instruction based on the following paper segment.
+        return """⚠️ CRITICAL JSON FORMAT:
+   - Return ONLY valid JSON, no extra text
+   - No markdown code blocks (```json)
+   - No explanations before or after JSON
+   - Use double quotes for all strings
+   - Escape backslashes properly: \\\\ not \\
+
+You are a professional quantum computing education expert. Please generate a valuable learning instruction based on the following paper segment.
 
 Paper Title: {paper_title}
 Paper Abstract:
@@ -37,7 +44,21 @@ Requirements:
    - Avoid vague references like "this algorithm", "the above method", "the system"
    - Use explicit names: "For the Quantum Phase Estimation algorithm..." instead of "For this algorithm..."
    - If referencing a mathematical object, include its definition: "Given the Hamiltonian H = ΣᵢZᵢZᵢ₊₁..."
+
+   **Examples of self-contained instructions:**
+   ❌ Bad: "Explain this algorithm's time complexity"
+   ✅ Good: "Explain the time complexity of Grover's quantum search algorithm for searching an unsorted database of N elements"
+
+   ❌ Bad: "Describe the method mentioned above"
+   ✅ Good: "Describe the Quantum Phase Estimation method for estimating eigenvalues of a unitary operator"
+
+   ❌ Bad: "What is the main advantage of using this technique?"
+   ✅ Good: "What is the main advantage of using the Variational Quantum Eigensolver (VQE) for finding ground state energies?"
+
 12. The instruction should be answerable by an expert who only sees (instruction + input), not the segment
+    **Self-test questions:**
+    - "Would an expert need to ask 'which algorithm?' or 'what is X?' when reading this instruction?"
+    - "Are all technical terms either standard quantum computing terminology or explicitly defined?"
 
 Instruction Type Options:
 - concept: Concept explanation and definition
@@ -54,7 +75,14 @@ Please return in JSON format:
     "key_concepts": ["key concept 1", "key concept 2"]
 }}"""
     # language_mode == "zh"
-    return """你是一个专业的量子计算教育专家。请基于以下论文段落，生成一个有价值的学习指令。
+    return """⚠️ 关键JSON格式要求:
+   - 只返回有效的JSON,不要有额外文本
+   - 不要使用markdown代码块(```json)
+   - JSON前后不要有任何解释性文字
+   - 使用双引号表示字符串
+   - 正确转义反斜杠: \\\\ 而非 \\
+
+你是一个专业的量子计算教育专家。请基于以下论文段落，生成一个有价值的学习指令。
 
 论文标题：《{paper_title}》
 论文摘要：
@@ -78,7 +106,21 @@ Please return in JSON format:
    - 避免模糊指代词，如"该算法"、"上述方法"、"这个系统"
    - 使用明确名称："对于量子相位估计算法..."而非"对于该算法..."
    - 引用数学对象时包含定义："给定哈密顿量H = ΣᵢZᵢZᵢ₊₁..."
+
+   **自包含指令示例:**
+   ❌ 差: "解释这个算法的时间复杂度"
+   ✅ 好: "解释Grover量子搜索算法在无序数据库中搜索N个元素时的时间复杂度"
+
+   ❌ 差: "描述上述方法"
+   ✅ 好: "描述量子相位估计(Quantum Phase Estimation)方法用于估计幺正算子本征值的原理"
+
+   ❌ 差: "这种技术有什么优势?"
+   ✅ 好: "变分量子本征求解器(VQE)在寻找基态能量方面有什么主要优势?"
+
 12. 指令应该可由只看到(instruction + input)的专家回答，而无需段落内容
+    **自我检测问题:**
+    - "专家看到这条指令时,会不会需要追问'哪个算法?'或'什么是X?'?"
+    - "指令中的所有专业术语是否都是量子计算标准术语或已明确定义?"
 
 指令类型选项：
 - concept: 概念解释和定义
@@ -123,18 +165,28 @@ Requirements:
 3. You can expand and explain appropriately, but the core content must come from the original text
 4. If it involves formulas or algorithms, please explain their meanings and derivation processes in detail
 5. Use a clear structure to organize the answer (you can use numbering, bullet points, etc.)
-6. **IMPORTANT: The entire answer must be in English and match the instruction language; do not mix Chinese**
-7. Do NOT include citation tags or source labels such as `` or 【来源: x】
-8. Do NOT reference figures or tables that are not fully described in the input (avoid "see Fig. 1", "as shown in Table 2")
-9. Use standard LaTeX delimiters $...$ or $$...$$ for all formulas (do not use \\(\\) or \\[\\])
-10. SELF-CONTAINMENT: The answer must be comprehensible using ONLY (instruction + input)
+6. **OUTPUT COMPLETENESS - CRITICAL:**
+   - Ensure your answer ends with a complete sentence
+   - For multi-step processes or lists, include a concluding summary statement
+   - Never end abruptly mid-sentence or mid-thought
+   - If discussing multiple points, provide proper closure (e.g., "These are the key principles...")
+   - Check that the last sentence has proper punctuation (. ! ?)
+7. **IMPORTANT: The entire answer must be in English and match the instruction language; do not mix Chinese**
+8. Do NOT include citation tags or source labels such as `` or 【来源: x】
+9. Do NOT reference figures or tables that are not fully described in the input (avoid "see Fig. 1", "as shown in Table 2")
+10. Use standard LaTeX delimiters $...$ or $$...$$ for all formulas (do not use \\(\\) or \\[\\])
+    **LaTeX Formula Guidelines:**
+    - For complex formulas: define all variables immediately after
+    - Example: "The probability is P(x) = |⟨x|ψ⟩|², where |ψ⟩ is the quantum state and |x⟩ is the basis state."
+    - Break down multi-line derivations step-by-step
+11. SELF-CONTAINMENT: The answer must be comprehensible using ONLY (instruction + input)
    - Do NOT reference the paper structure: avoid "as mentioned above", "from section 3", "equation (5)"
    - If you need a formula, restate it fully in the answer (it may already be in input, but verify)
    - Define all notation used in your answer, even if defined in the segment
-11. CONTEXT INDEPENDENCE: Assume the reader has NOT seen the original paper
+12. CONTEXT INDEPENDENCE: Assume the reader has NOT seen the original paper
    - Don't use phrases like "as we saw", "the previously discussed", "this system"
    - Be explicit: "In the quantum phase estimation algorithm discussed above..." → "The quantum phase estimation algorithm..."
-12. **CRITICAL: NEVER mention the source paper or segment in your answer**
+13. **CRITICAL: NEVER mention the source paper or segment in your answer**
    - FORBIDDEN phrases: "Based on the provided segment", "from the paper", "according to the segment", "as stated in the original paper"
    - Your answer should present knowledge directly, as if you are teaching the concept yourself
    - Start with the topic directly, not with meta-references to where the information came from
@@ -160,18 +212,28 @@ Please return the answer content directly, no JSON format needed."""
 3. 可以适当扩展和解释，但核心内容必须来自原文
 4. 如果涉及公式或算法，请详细解释其含义和推导过程
 5. 使用清晰的结构组织回答（可使用编号、分点等）
-6. 必须为纯中文回答，严禁中英混杂
-7. 禁止出现任何引用标签或来源标记，如 ``、【来源: x】 等
-8. 禁止引用未转化为文本的图/表（例如“见图1”“如表2所示”），除非表格内容已完整写入input
-9. 所有数学公式统一使用标准LaTeX格式$...$或$$...$$，不要使用\\(\\)或\\[\\]
-10. 自包含性：回答必须仅使用(instruction + input)即可理解
+6. **输出完整性 - 关键要求:**
+   - 确保回答以完整句子结尾
+   - 对于多步骤过程或列表,必须包含总结性陈述
+   - 绝不能在句子或思路中间突然结束
+   - 讨论多个要点时提供适当收尾(如"以上是关键原理...")
+   - 检查最后一句是否有正确标点(。!?)
+7. 必须为纯中文回答，严禁中英混杂
+8. 禁止出现任何引用标签或来源标记，如 ``、【来源: x】 等
+9. 禁止引用未转化为文本的图/表（例如"见图1""如表2所示"），除非表格内容已完整写入input
+10. 所有数学公式统一使用标准LaTeX格式$...$或$$...$$，不要使用\\(\\)或\\[\\]
+    **LaTeX公式指导:**
+    - 对于复杂公式:紧接着定义所有变量
+    - 示例:"概率为P(x) = |⟨x|ψ⟩|²,其中|ψ⟩是量子态,|x⟩是基态"
+    - 多行推导要逐步分解说明
+11. 自包含性：回答必须仅使用(instruction + input)即可理解
    - 不要引用论文结构：避免"如上所述"、"第3节中"、"公式(5)"
    - 需要公式时完整重述（可能已在input中，但需验证）
    - 定义回答中使用的所有符号，即使段落中已定义
-11. 上下文独立性：假设读者未看过原始论文
+12. 上下文独立性：假设读者未看过原始论文
    - 避免"如我们所见"、"前面讨论的"、"该系统"等短语
    - 明确表达："上文讨论的量子相位估计算法..." → "量子相位估计算法..."
-12. **关键要求：绝对不要在回答中提及来源论文或段落**
+13. **关键要求：绝对不要在回答中提及来源论文或段落**
    - 禁用短语："基于提供的片段"、"根据原始论文段落"、"从论文中"、"如原文所述"
    - 你的回答应该直接呈现知识，就像你在亲自教授这个概念
    - 直接从主题开始，不要引用信息来源
@@ -187,7 +249,14 @@ def get_input_prompt(language_mode: str) -> str:
         language_mode: "en" (英文), "zh" (纯中文)
     """
     if language_mode == "en":
-        return """You are a professional instruction data quality expert. Please analyze the following instruction and determine whether it needs an input field, and if so, generate appropriate input content.
+        return """⚠️ CRITICAL JSON FORMAT:
+   - Return ONLY valid JSON, no extra text
+   - No markdown code blocks (```json)
+   - No explanations before or after JSON
+   - Use double quotes for all strings
+   - Escape backslashes properly: \\\\ not \\
+
+You are a professional instruction data quality expert. Please analyze the following instruction and determine whether it needs an input field, and if so, generate appropriate input content.
 
 Original Paper Title: {paper_title}
 Original Paper Abstract:
@@ -214,11 +283,19 @@ Analysis Guidelines:
    - Provides necessary context without being redundant with the instruction
    - Uses concrete examples or values when appropriate
    - Is relevant to the paper segment content
-5. CONTEXT EXTRACTION: When generating input, extract ALL necessary background from the segment:
-   - Key term definitions that instruction references
-   - Complete formula/equation definitions with variable explanations
-   - Problem setup details (system size, boundary conditions, parameter ranges)
-   - Physical interpretation of mathematical objects
+5. CONTEXT EXTRACTION PRIORITY (from high to low):
+   ⭐ Priority 1: Formulas/definitions directly referenced in instruction (MUST include)
+   ⭐ Priority 2: Algorithm/method prerequisites and assumptions
+   Priority 3: Parameter constraints, value ranges, boundary conditions
+   Priority 4: Problem setup specifics
+   Priority 5: Mathematical notation definitions
+
+   **Example:**
+   If instruction asks "Derive the eigenvalues of H", input MUST include:
+   - The full definition of H (e.g., "The Hamiltonian is H = ΣᵢZᵢZᵢ₊₁ + hΣᵢXᵢ")
+   - Definitions of Zᵢ and Xᵢ (Pauli operators)
+   - System size if relevant (e.g., "for a system of N=10 qubits")
+
 6. SELF-CONTAINMENT TEST: Can an expert answer the instruction using ONLY (instruction + input) without seeing the segment?
    - If NO: add missing context to input
    - If YES: input is sufficient
@@ -226,7 +303,18 @@ Analysis Guidelines:
    - Empty input means ALL necessary context must already be in the instruction
    - If key definitions/formulas are needed but missing from instruction, you MUST add them to input
    - Test: Would an expert say "I need more context" when seeing only (instruction + empty_input)?
-8. PURE INPUT: The input must be pure knowledge or data, with no meta prefixes like "Key context from paper:", "Based on segment:", or "Context:"
+8. PURE INPUT: The input must be pure knowledge or data, with no meta prefixes
+
+   ❌ Forbidden prefixes:
+   - "Context from the paper:"
+   - "Based on segment:"
+   - "Background information:"
+   - "Key definitions:"
+
+   ✅ Correct format:
+   - Direct statement: "The Hamiltonian is defined as H = ΣᵢZᵢZᵢ₊₁..."
+   - Present knowledge like a textbook, without meta-commentary
+
 9. Avoid redundancy: Don't repeat what's already clear in the instruction
 10. Keep input in English to match the instruction language; do not mix Chinese
 11. Use standard LaTeX delimiters $...$ or $$...$$ for any formulas
@@ -238,7 +326,14 @@ Please return in JSON format:
     "input": "The generated input content, or empty string if not needed"
 }}"""
     # language_mode == "zh"
-    return """你是一个专业的指令数据质量专家。请分析以下指令，判断是否需要input字段，如果需要则生成合适的input内容。
+    return """⚠️ 关键JSON格式要求:
+   - 只返回有效的JSON,不要有额外文本
+   - 不要使用markdown代码块(```json)
+   - JSON前后不要有任何解释性文字
+   - 使用双引号表示字符串
+   - 正确转义反斜杠: \\\\ 而非 \\
+
+你是一个专业的指令数据质量专家。请分析以下指令，判断是否需要input字段，如果需要则生成合适的input内容。
 
 原始论文标题：《{paper_title}》
 原始论文摘要：
@@ -265,11 +360,19 @@ Please return in JSON format:
    - 提供必要的上下文，但不与指令重复
    - 在适当时使用具体的示例或数值
    - 与论文段落内容相关
-5. 上下文提取：生成input时，从段落中提取所有必要背景：
-   - 指令中引用的关键术语定义
-   - 完整的公式/方程定义及变量解释
-   - 问题设置细节（系统规模、边界条件、参数范围）
-   - 数学对象的物理意义
+5. 上下文提取优先级(从高到低):
+   ⭐ 优先级1: 指令中直接引用的公式/定义(必须包含)
+   ⭐ 优先级2: 算法/方法的前提条件和假设
+   优先级3: 参数约束、取值范围、边界条件
+   优先级4: 问题设定(problem setup)的具体描述
+   优先级5: 相关的数学符号定义
+
+   **示例:**
+   若指令问"推导H的本征值",input必须包含:
+   - H的完整定义(如"哈密顿量H = ΣᵢZᵢZᵢ₊₁ + hΣᵢXᵢ")
+   - Zᵢ和Xᵢ的定义(泡利算子)
+   - 若相关还需系统规模(如"N=10个量子比特")
+
 6. 自包含性测试：专家能否仅用(instruction + input)回答指令，而无需看段落？
    - 如果不能：将缺失上下文添加到input
    - 如果可以：input已足够
@@ -277,7 +380,18 @@ Please return in JSON format:
    - 空input意味着所有必要上下文必须已经在指令中
    - 如果关键定义/公式缺失但指令中未包含，你必须将它们添加到input
    - 测试：专家看到(指令+空input)时会不会说"我需要更多上下文"？
-8. 纯净输入：input必须是纯粹的知识片段或数据，禁止包含如 "Key context from paper:"、"Based on segment:"、"Context:" 等元数据前缀
+8. 纯净输入：input必须是纯粹的知识片段或数据，禁止包含元数据前缀
+
+   ❌ 禁止使用:
+   - "论文中的背景:"
+   - "基于段落:"
+   - "背景信息:"
+   - "关键定义:"
+
+   ✅ 正确方式:
+   - 直接陈述: "哈密顿量定义为H = ΣᵢZᵢZᵢ₊₁..."
+   - 像教科书一样直接呈现知识,无meta前缀
+
 9. 避免冗余：不要重复指令中已经明确的内容
 10. input必须使用中文，严禁中英混杂
 11. 所有数学公式统一使用标准LaTeX格式$...$或$$...$$
@@ -290,7 +404,14 @@ Please return in JSON format:
 }}"""
 
 
-VERIFICATION_PROMPT = """你是一个严格的学术审核专家。请验证以下生成的指令-回答对是否准确反映了原始论文的内容和本意。
+VERIFICATION_PROMPT = """⚠️ 关键JSON格式要求:
+   - 只返回有效的JSON,不要有额外文本
+   - 不要使用markdown代码块(```json)
+   - JSON前后不要有任何解释性文字
+   - 使用双引号表示字符串
+   - 正确转义反斜杠: \\\\ 而非 \\
+
+你是一个严格的学术审核专家。请验证以下生成的指令-回答对是否准确反映了原始论文的内容和本意。
 
 原始论文标题：《{paper_title}》
 原始论文摘要：
@@ -309,12 +430,33 @@ VERIFICATION_PROMPT = """你是一个严格的学术审核专家。请验证以�
 4. 无幻觉：是否存在原文未提及的信息被当作事实陈述
 5. 语言表达：回答是否清晰、专业，符合学术规范
 6. 指令和输入是否一致，是否应该生成输入而未生成
-7. 上下文泄漏检查（宽松模式）：
+7. 上下文泄漏检查（优化后的宽松模式）:
    - 检查是否存在未定义的指代词："该/这个/上述+算法/方法/系统"（需要有明确的先行词）
    - 检查是否引用了论文结构："如第X节所述"、"公式(编号)"、"如图/表X"
    - 检查是否使用了instruction/input中未定义的论文特定符号或术语
-   - 注意：允许量子计算领域的标准术语（如qubit、Hamiltonian、entanglement、CNOT门等）
-8. 自包含性评估：
+
+   **允许的量子计算标准术语(无需在instruction/input中定义):**
+   * 基本概念: qubit(量子比特), superposition(叠加), entanglement(纠缠),
+     Hamiltonian(哈密顿量), unitary(幺正), Hermitian(厄米), decoherence(退相干)
+   * 常见门: Hadamard, CNOT, Toffoli, Pauli-X/Y/Z, Phase gate, T gate, SWAP gate
+   * 经典算法: Grover search(Grover搜索), Shor factorization(Shor分解),
+     VQE(变分量子本征求解器), QAOA, QPE(量子相位估计)
+   * 数学对象: density matrix(密度矩阵), Bloch sphere(布洛赫球),
+     tensor product(张量积), Hilbert space(希尔伯特空间)
+   * 注意: 论文特定符号(如自定义算法名、特殊参数、论文中新定义的术语)仍需明确定义
+
+8. 输出完整性检查:
+   - 检查output字段的最后50个字符
+   - 识别明显截断标志:
+     * 句子在标点符号前结束(如"增长了约"、"主要包括")
+     * 列表/步骤突然中断(如"第一...第二..."后无结束)
+     * "首先...其次...然后..."缺少最后的"综上所述"类收尾
+   - 完整性评估标准:
+     * 最后一句有明确结束标点(。!？.!?)
+     * 思路完整(有开头、论述、结论/总结)
+     * 如output明显不完整,在issues中标记"输出不完整,在句中截断"
+
+9. 自包含性评估：
    - 假设学习者只能看到(instruction, input, output)三个字段
    - 判断学习者是否能完全理解内容，无需查阅原始论文
    - 如果需要论文上下文才能理解，标记为未通过

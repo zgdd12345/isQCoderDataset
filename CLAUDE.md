@@ -11,12 +11,6 @@ This is a Python project that generates instruction-tuning datasets for quantum 
 ### Setup and Installation
 ```bash
 pip install -r requirements.txt
-cp .env.example .env  # Then edit .env with your API key
-```
-
-### Setup and Installation
-```bash
-pip install -r requirements.txt
 # Installs: dashscope, python-dotenv, openai
 
 # Set API key
@@ -66,6 +60,34 @@ python test_batch.py
 # Check all dependencies and configuration
 python check_dependencies.py
 ```
+
+### Data Cleaning for Pretraining
+```bash
+# Clean all papers in data/raw directory (removes references, acknowledgments, images)
+python datacleaning.py --input-dir data/raw --output-dir data/cleaned
+
+# Test on 10 random files first
+python datacleaning.py --input-dir data/raw --output-dir data/test --sample-size 10
+
+# Dry run to preview changes without writing
+python datacleaning.py --dry-run
+
+# Keep image references (default: remove)
+python datacleaning.py --keep-images
+
+# Skip LaTeX math normalization (default: normalize)
+python datacleaning.py --no-normalize-math
+
+# View cleaning statistics
+cat data/cleaned/stats.json | jq .
+```
+
+**Data Cleaning Results** (as of 2026-01-20):
+- **Input**: 2,010 papers, 161.2 MB (1,084,791 lines)
+- **Output**: 2,010 cleaned papers, 133.2 MB (886,468 lines)
+- **Reduction**: 17.4% (28 MB saved)
+- **Removed**: References (1,564 files), Acknowledgments (998 files), Images (1,720 files)
+- **Preserved**: Appendices, main content, mathematical formulas
 
 ### Dataset Analysis and Processing
 ```python
@@ -120,7 +142,27 @@ The project follows a modular architecture with clear separation of concerns:
    - Quality filtering and statistical analysis
    - Dataset merging and preview capabilities
 
+7. **Data Cleaning Module** (`datacleaning.py`): Prepares papers for LLM pretraining
+   - Removes low-value content: References, Acknowledgments, broken image links
+   - Normalizes LaTeX math spacing from PDF conversion artifacts
+   - Preserves appendices and all main content
+   - Batch processing with progress tracking and statistics
+   - Achieved 17.4% size reduction on 2,010 papers (161.2 MB → 133.2 MB)
+
 ### Data Flow
+
+#### Data Cleaning Pipeline (Pretraining Preparation)
+1. Raw papers are loaded from `data/raw/` directory (2,010 markdown files)
+2. For each paper:
+   - Remove References section (identified by `# References` header)
+   - Remove Acknowledgments section (identified by `# Acknowledgments` header)
+   - Remove broken image references (`![](images/hash.jpg)`)
+   - Normalize LaTeX math spacing (fix PDF conversion artifacts like `$ .` → `$.`)
+   - Normalize whitespace (max 2 consecutive newlines)
+   - Preserve appendices and all main content
+3. Write cleaned files to `data/cleaned/` directory
+4. Generate comprehensive statistics report (saved as `data/cleaned/stats.json`)
+5. Output: High-quality cleaned markdown suitable for LLM continued pretraining
 
 #### Real-time Mode
 1. Papers are read from `data/` directory (Markdown format)
